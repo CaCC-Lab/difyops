@@ -1,6 +1,8 @@
 # DifyOps
 
-DifyOps（CLI / Python package 名: `dify-admin`）は、Dify を GUI ではなく、**CLI・Python・生成AI（MCP）** から管理するための運用基盤です。
+> Product: **DifyOps** / GitHub repo: `difyops` / CLI & Python package: `dify-admin`
+
+DifyOps は、Dify を GUI ではなく、**CLI・Python・生成AI（MCP）** から管理するための運用基盤です。
 
 Claude Code や Cursor から自然言語で Dify のアプリ・ナレッジベース・設定変更を操作でき、`plan/apply` による desired state 管理、設定差分、スナップショット、監査ログにより、Dify 運用に **再現性・安全性・説明可能性** を持ち込めます。
 
@@ -69,7 +71,7 @@ Claude Code や Cursor から Dify を自然言語で管理できます。
   "mcpServers": {
     "difyops": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/dify-admin", "--extra", "mcp", "dify-admin", "mcp", "serve"],
+      "args": ["run", "--directory", "/path/to/difyops", "--extra", "mcp", "dify-admin", "mcp", "serve"],
       "env": {
         "DIFY_URL": "http://localhost:5001",
         "DIFY_EMAIL": "admin@example.com",
@@ -270,9 +272,11 @@ with DifyClient() as client:
 
 - **セルフホスト版 Dify 専用**です（cloud.dify.ai には非対応）
 - MCP 経由の確認フローは、クライアント実装に依存します
-- 認証情報は `DIFY_URL`, `DIFY_EMAIL`, `DIFY_PASSWORD` 環境変数または `.env` で渡します
+- 認証情報は `DIFY_URL`, `DIFY_EMAIL`, `DIFY_PASSWORD` 環境変数または `.env` で渡します（`.env.example` を参照）
 - `advanced-chat` / `workflow` モードのアプリでは `apps_config_get` / `apps_config_set` が使えません（Dify API の制約）
 - read-only モードの環境変数名は現在 `DIFY_ADMIN_MODE` です
+
+> **Warning:** `reset-password` コマンドは Docker 経由で PostgreSQL に直接アクセスしてパスワードを更新します。Dify の通常 API 操作ではなく DB 直操作です。セルフホスト環境の管理者向け緊急用途に限定してください。
 
 ## 開発
 

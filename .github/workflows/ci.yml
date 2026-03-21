@@ -73,5 +73,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install ".[dev]" mypy
 
-      - name: Type check
-        run: mypy dify_admin/ --ignore-missing-imports --no-error-summary || true
+      - name: Type check (non-blocking)
+        run: mypy dify_admin/ --ignore-missing-imports --no-error-summary
+        continue-on-error: true
