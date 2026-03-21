@@ -52,10 +52,16 @@ Dify の運用は、作る段階よりも運用段階で手間が増えます。
 ## インストール
 
 ```bash
-pip install .
+# GitHub からインストール
+pip install git+https://github.com/CaCC-Lab/difyops.git
 
 # MCP サーバーも使う場合
-pip install ".[mcp]"
+pip install "dify-admin[mcp] @ git+https://github.com/CaCC-Lab/difyops.git"
+
+# ローカル開発の場合
+git clone https://github.com/CaCC-Lab/difyops.git
+cd difyops
+pip install -e ".[dev,mcp]"
 ```
 
 ## MCP サーバー（AI 連携）
