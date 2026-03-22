@@ -15,7 +15,11 @@ from typing import Any, Optional
 import httpx
 
 from dify_admin.auth import DifySession, login
-from dify_admin.exceptions import DifyServerError, raise_for_dify_status
+from dify_admin.exceptions import (
+    DifyMethodNotAllowedError,
+    DifyServerError,
+    raise_for_dify_status,
+)
 
 
 class DifyClient:
@@ -236,15 +240,12 @@ class DifyClient:
         field from apps_get() if the endpoint returns 405 (common for
         advanced-chat/workflow apps or newer Dify versions).
         """
-        from dify_admin.exceptions import DifyMethodNotAllowedError
-
         try:
             return self._console_get(f"/console/api/apps/{app_id}/model-config")
         except DifyMethodNotAllowedError:
             app = self.apps_get(app_id)
-            config = app.get("model_config")
-            if config:
-                return config
+            if "model_config" in app:
+                return app["model_config"] or {}
             raise
 
     def apps_update_config(self, app_id: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -460,9 +461,16 @@ class DifyClient:
     def apps_import(self, data: str, name: str | None = None) -> dict[str, Any]:
         """Import app from DSL YAML string.
 
+        Handles the Dify v1.13+ /apps/imports endpoint which returns an
+        import job object. If the import requires confirmation (status=pending),
+        automatically sends a confirm request.
+
         Args:
             data: YAML string of the app DSL
             name: Optional name override for the imported app
+
+        Returns:
+            Dict with at least 'id' (app ID) and 'name' keys
         """
         payload: dict[str, Any] = {
             "mode": "yaml-content",
@@ -470,10 +478,32 @@ class DifyClient:
         }
         if name:
             payload["name"] = name
-        return self._console_post(
+        result = self._console_post(
             "/console/api/apps/imports",
             json=payload,
         )
+
+        # Handle pending imports that require confirmation
+        import_id = result.get("id", "")
+        if result.get("status") == "pending" and import_id:
+            result = self._console_post(
+                f"/console/api/apps/imports/{import_id}/confirm",
+            )
+
+        # Normalize: ensure 'id' points to the app, not the import job
+        app_id = result.get("app_id") or result.get("id", "")
+        if app_id and app_id != result.get("id"):
+            result["id"] = app_id
+
+        # Fetch app details to include name in response
+        if app_id and "name" not in result:
+            try:
+                app = self.apps_get(app_id)
+                result["name"] = app.get("name", name or "")
+            except Exception:
+                result["name"] = name or ""
+
+        return result
 
     def apps_clone(self, app_id: str, name: str | None = None) -> dict[str, Any]:
         """Clone an app by exporting and re-importing its DSL.
