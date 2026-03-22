@@ -462,6 +462,9 @@ class DifyClient:
     def kb_delete_all_documents(self, dataset_id: str) -> int:
         """Delete all documents in a knowledge base.
 
+        Deletes documents one-by-one using the single-document delete
+        endpoint, which is compatible with Dify v1.13+.
+
         Returns:
             Number of documents deleted
         """
@@ -470,15 +473,12 @@ class DifyClient:
             docs = self.kb_documents(dataset_id, page=1, limit=100)
             if not docs:
                 break
-            doc_ids = [d["id"] for d in docs if d.get("id")]
-            if not doc_ids:
-                break
-            self._console_request(
-                "DELETE",
-                f"/console/api/datasets/{dataset_id}/documents",
-                params=[("document_id", did) for did in doc_ids],
-            )
-            deleted += len(doc_ids)
+            for doc in docs:
+                doc_id = doc.get("id")
+                if not doc_id:
+                    continue
+                self.kb_delete_document(dataset_id, doc_id)
+                deleted += 1
             if len(docs) < 100:
                 break
         return deleted
