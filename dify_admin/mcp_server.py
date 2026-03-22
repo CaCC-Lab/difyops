@@ -286,6 +286,7 @@ def doctor() -> list[dict[str, Any]]:
     Returns a list of check results (reachability, setup, credentials, auth, api_access).
     Each result has: name, status (pass/fail/warn/skip), message.
     """
+    load_dotenv()
     from dify_admin.doctor import run_checks
 
     return run_checks()
