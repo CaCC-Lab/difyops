@@ -444,11 +444,20 @@ class DifyClient:
     def kb_delete_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
         """Delete a single document from a knowledge base.
 
+        Uses the Dify v1.13+ batch delete endpoint with document_id query param.
+
         Args:
             dataset_id: Dataset ID
             document_id: Document ID to delete
         """
-        return self._console_delete(f"/console/api/datasets/{dataset_id}/documents/{document_id}")
+        response = self._console_request(
+            "DELETE",
+            f"/console/api/datasets/{dataset_id}/documents",
+            params={"document_id": document_id},
+        )
+        if response.status_code == 204 or not response.content:
+            return {"result": "success"}
+        return response.json()
 
     def kb_delete_all_documents(self, dataset_id: str) -> int:
         """Delete all documents in a knowledge base.
@@ -461,15 +470,16 @@ class DifyClient:
             docs = self.kb_documents(dataset_id, page=1, limit=100)
             if not docs:
                 break
-            deleted_this_batch = 0
-            for doc in docs:
-                doc_id = doc.get("id")
-                if not doc_id:
-                    continue
-                self._console_delete(f"/console/api/datasets/{dataset_id}/documents/{doc_id}")
-                deleted += 1
-                deleted_this_batch += 1
-            if deleted_this_batch == 0:
+            doc_ids = [d["id"] for d in docs if d.get("id")]
+            if not doc_ids:
+                break
+            self._console_request(
+                "DELETE",
+                f"/console/api/datasets/{dataset_id}/documents",
+                params=[("document_id", did) for did in doc_ids],
+            )
+            deleted += len(doc_ids)
+            if len(docs) < 100:
                 break
         return deleted
 
