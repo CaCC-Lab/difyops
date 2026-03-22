@@ -105,8 +105,11 @@ class DifyClient:
         return self._console_request("GET", path, params=params).json()
 
     def _console_post(self, path: str, **kwargs: Any) -> Any:
-        """POST to Console API and return JSON."""
-        return self._console_request("POST", path, **kwargs).json()
+        """POST to Console API and return JSON (or success dict if empty)."""
+        response = self._console_request("POST", path, **kwargs)
+        if response.status_code == 204 or not response.content:
+            return {"result": "success"}
+        return response.json()
 
     def _console_put(self, path: str, **kwargs: Any) -> Any:
         """PUT to Console API and return JSON."""
@@ -303,6 +306,21 @@ class DifyClient:
         )
         return data.get("data", [])
 
+    def _upload_file_to_storage(self, file_path: Path) -> str:
+        """Upload a file to Dify storage and return the file UUID.
+
+        Step 1 of the 2-step upload process for Dify v1.13+.
+        """
+        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        with open(file_path, "rb") as f:
+            result = self._console_request(
+                "POST",
+                "/console/api/files/upload",
+                files={"file": (file_path.name, f, mime_type)},
+                data={"source": "datasets"},
+            ).json()
+        return result["id"]
+
     def kb_upload_file(
         self,
         dataset_id: str,
@@ -314,6 +332,8 @@ class DifyClient:
     ) -> dict[str, Any]:
         """Upload a single file to a knowledge base.
 
+        Uses the Dify v1.13+ 2-step upload: file upload → document creation.
+
         Args:
             dataset_id: Dataset ID
             file_path: Path to file
@@ -322,6 +342,10 @@ class DifyClient:
             chunk_overlap: Overlap tokens between chunks (None = automatic)
             separator: Custom separator string (None = automatic)
         """
+        # Step 1: upload file to storage
+        file_id = self._upload_file_to_storage(file_path)
+
+        # Step 2: build process_rule
         if chunk_size or chunk_overlap or separator:
             rules: dict[str, Any] = {"mode": "custom"}
             rules["rules"] = {}
@@ -339,21 +363,20 @@ class DifyClient:
         else:
             process_rule = {"mode": "automatic"}
 
-        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        with open(file_path, "rb") as f:
-            return self._console_request(
-                "POST",
-                f"/console/api/datasets/{dataset_id}/document/create_by_file",
-                files={"file": (file_path.name, f, mime_type)},
-                data={
-                    "data": json.dumps(
-                        {
-                            "indexing_technique": indexing_technique,
-                            "process_rule": process_rule,
-                        }
-                    )
+        # Step 3: create document from uploaded file
+        return self._console_post(
+            f"/console/api/datasets/{dataset_id}/documents",
+            json={
+                "indexing_technique": indexing_technique,
+                "data_source": {
+                    "info_list": {
+                        "data_source_type": "upload_file",
+                        "file_info_list": {"file_ids": [file_id]},
+                    }
                 },
-            ).json()
+                "process_rule": process_rule,
+            },
+        )
 
     def kb_upload_dir(
         self,
@@ -407,12 +430,15 @@ class DifyClient:
     def kb_document_reindex(self, dataset_id: str, document_id: str) -> dict[str, Any]:
         """Trigger re-indexing of a document.
 
+        Uses the Dify v1.13+ retry endpoint.
+
         Args:
             dataset_id: Dataset ID
             document_id: Document ID
         """
         return self._console_post(
-            f"/console/api/datasets/{dataset_id}/documents/{document_id}/indexing",
+            f"/console/api/datasets/{dataset_id}/retry",
+            json={"document_ids": [document_id]},
         )
 
     def kb_delete_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
