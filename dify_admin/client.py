@@ -230,8 +230,22 @@ class DifyClient:
         return self._console_delete(f"/console/api/apps/{app_id}")
 
     def apps_get_config(self, app_id: str) -> dict[str, Any]:
-        """Get app model configuration."""
-        return self._console_get(f"/console/api/apps/{app_id}/model-config")
+        """Get app model configuration.
+
+        Tries /model-config endpoint first; falls back to model_config
+        field from apps_get() if the endpoint returns 405 (common for
+        advanced-chat/workflow apps or newer Dify versions).
+        """
+        from dify_admin.exceptions import DifyMethodNotAllowedError
+
+        try:
+            return self._console_get(f"/console/api/apps/{app_id}/model-config")
+        except DifyMethodNotAllowedError:
+            app = self.apps_get(app_id)
+            config = app.get("model_config")
+            if config:
+                return config
+            raise
 
     def apps_update_config(self, app_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """Update app model configuration."""
@@ -450,12 +464,15 @@ class DifyClient:
             data: YAML string of the app DSL
             name: Optional name override for the imported app
         """
-        form: dict[str, Any] = {"data": data}
+        payload: dict[str, Any] = {
+            "mode": "yaml-content",
+            "yaml_content": data,
+        }
         if name:
-            form["name"] = name
+            payload["name"] = name
         return self._console_post(
-            "/console/api/apps/import",
-            data=form,
+            "/console/api/apps/imports",
+            json=payload,
         )
 
     def apps_clone(self, app_id: str, name: str | None = None) -> dict[str, Any]:
