@@ -18,6 +18,7 @@ from dify_admin.auth import DifySession, login
 from dify_admin.exceptions import (
     DifyMethodNotAllowedError,
     DifyServerError,
+    DifyValidationError,
     raise_for_dify_status,
 )
 
@@ -441,27 +442,45 @@ class DifyClient:
             json={"document_ids": [document_id]},
         )
 
+    def kb_delete_documents_batch(
+        self, dataset_id: str, document_ids: list[str]
+    ) -> None:
+        """Delete multiple documents in one request (Console API batch delete).
+
+        Dify accepts repeated ``document_id`` query parameters on
+        ``DELETE /datasets/{id}/documents`` (see ``getlist("document_id")`` upstream).
+
+        Args:
+            dataset_id: Dataset ID
+            document_ids: Document IDs to remove (non-empty)
+        """
+        if not document_ids:
+            return
+        self._console_request(
+            "DELETE",
+            f"/console/api/datasets/{dataset_id}/documents",
+            params=[("document_id", doc_id) for doc_id in document_ids],
+        )
+
     def kb_delete_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
         """Delete a single document from a knowledge base.
 
-        Uses the Dify v1.13+ batch delete endpoint with document_id query param.
+        Uses the same batch delete endpoint as :meth:`kb_delete_documents_batch`.
 
         Args:
             dataset_id: Dataset ID
             document_id: Document ID to delete
         """
-        self._console_request(
-            "DELETE",
-            f"/console/api/datasets/{dataset_id}/documents",
-            params={"document_id": document_id},
-        )
+        self.kb_delete_documents_batch(dataset_id, [document_id])
         return {"result": "success"}
 
     def kb_delete_all_documents(self, dataset_id: str) -> int:
         """Delete all documents in a knowledge base.
 
-        Deletes documents one-by-one using the single-document delete
-        endpoint, which is compatible with Dify v1.13+.
+        Fetches the first page repeatedly (until empty) and removes each page's
+        documents in **one** DELETE call per page using batch ``document_id``
+        parameters. This avoids N sequential HTTP calls per page and prevents
+        MCP/client timeouts on large knowledge bases.
 
         Returns:
             Number of documents deleted
@@ -471,12 +490,17 @@ class DifyClient:
             docs = self.kb_documents(dataset_id, page=1, limit=100)
             if not docs:
                 break
-            for doc in docs:
-                doc_id = doc.get("id")
-                if not doc_id:
-                    continue
-                self.kb_delete_document(dataset_id, doc_id)
-                deleted += 1
+            ids: list[str] = []
+            for d in docs:
+                raw_id = d.get("id")
+                if not raw_id:
+                    raise DifyValidationError(
+                        "Document listing row missing id; cannot clear safely",
+                        path=f"/console/api/datasets/{dataset_id}/documents",
+                    )
+                ids.append(str(raw_id))
+            self.kb_delete_documents_batch(dataset_id, ids)
+            deleted += len(ids)
             if len(docs) < 100:
                 break
         return deleted

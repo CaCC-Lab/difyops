@@ -791,7 +791,7 @@ def kb_docs_delete(
 
 
 @mcp.tool()
-def kb_clear(dataset_id: str | None = None, name: str | None = None) -> dict[str, int]:
+def kb_clear(dataset_id: str | None = None, name: str | None = None) -> dict[str, Any]:
     """DESTRUCTIVE: Delete ALL documents in a knowledge base. Cannot be undone.
 
     Args:
