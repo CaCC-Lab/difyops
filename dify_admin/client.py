@@ -450,14 +450,12 @@ class DifyClient:
             dataset_id: Dataset ID
             document_id: Document ID to delete
         """
-        response = self._console_request(
+        self._console_request(
             "DELETE",
             f"/console/api/datasets/{dataset_id}/documents",
             params={"document_id": document_id},
         )
-        if response.status_code == 204 or not response.content:
-            return {"result": "success"}
-        return response.json()
+        return {"result": "success"}
 
     def kb_delete_all_documents(self, dataset_id: str) -> int:
         """Delete all documents in a knowledge base.
