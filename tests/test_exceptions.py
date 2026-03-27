@@ -1,5 +1,7 @@
 """Tests for exceptions.py — error hierarchy and raise_for_dify_status."""
 
+from __future__ import annotations
+
 import httpx
 import pytest
 

@@ -1,5 +1,7 @@
 """Tests for resolve.py — name resolution."""
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock
 
 import pytest
