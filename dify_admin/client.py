@@ -442,9 +442,7 @@ class DifyClient:
             json={"document_ids": [document_id]},
         )
 
-    def kb_delete_documents_batch(
-        self, dataset_id: str, document_ids: list[str]
-    ) -> None:
+    def kb_delete_documents_batch(self, dataset_id: str, document_ids: list[str]) -> None:
         """Delete multiple documents in one request (Console API batch delete).
 
         Dify accepts repeated ``document_id`` query parameters on
