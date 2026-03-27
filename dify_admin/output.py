@@ -110,6 +110,38 @@ def confirm_destructive(ctx: click.Context, message: str, yes: bool = False) -> 
     return click.confirm(message)
 
 
+def output_json_error(
+    error_type: str,
+    message: str,
+    *,
+    hint: str | None = None,
+    status_code: int | None = None,
+    exit_code: int = 1,
+) -> None:
+    """Output structured JSON error to stderr.
+
+    stdout is reserved for success data only. Agents detect errors via
+    exit code and parse structured error details from stderr.
+
+    Args:
+        error_type: Exception class name (e.g. "DifyNotFoundError")
+        message: Human-readable error message
+        hint: Optional recovery suggestion
+        status_code: HTTP status code (for API errors)
+        exit_code: CLI exit code
+    """
+    error_obj: dict[str, Any] = {
+        "error": error_type,
+        "message": message,
+        "hint": hint,
+        "exit_code": exit_code,
+    }
+    if status_code is not None:
+        error_obj["status_code"] = status_code
+    sys.stderr.write(json.dumps(error_obj, ensure_ascii=False) + "\n")
+    sys.stderr.flush()
+
+
 def output_error(message: str) -> None:
     """Output error message to stderr."""
     _STDERR_CONSOLE.print(message)

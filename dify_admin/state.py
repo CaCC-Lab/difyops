@@ -51,6 +51,21 @@ class StatePlan:
         return counts
 
 
+def load_state_yaml(raw: str) -> dict[str, Any]:
+    """Load desired state from a YAML string.
+
+    Args:
+        raw: UTF-8 YAML text (state file body).
+
+    Returns:
+        Parsed state dict with 'apps' and/or 'knowledge_bases' keys.
+    """
+    data = yaml.safe_load(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"State file must be a YAML mapping, got {type(data).__name__}")
+    return data
+
+
 def load_state_file(path: Path) -> dict[str, Any]:
     """Load desired state from a YAML file.
 
@@ -61,10 +76,7 @@ def load_state_file(path: Path) -> dict[str, Any]:
         Parsed state dict with 'apps' and/or 'knowledge_bases' keys
     """
     raw = path.read_text(encoding="utf-8")
-    data = yaml.safe_load(raw)
-    if not isinstance(data, dict):
-        raise ValueError(f"State file must be a YAML mapping, got {type(data).__name__}")
-    return data
+    return load_state_yaml(raw)
 
 
 def _plan_resources(

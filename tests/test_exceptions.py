@@ -106,3 +106,56 @@ class TestExceptionAttributes:
         assert err.status_code == 400
         assert err.method == "POST"
         assert err.path == "/test"
+
+
+class TestExitCodeConstantsAndMapping:
+    """REQ-005.1–005.5, PROP-007: exit code 定数と exit_code_for_exception.
+
+    実装は dify_admin.exceptions に追加予定（Canon TDD）。新シンボルはメソッド内で import し、
+    既存テストのモジュール読み込みを壊さない。
+    """
+
+    def test_exit_code_constants_match_requirements(self) -> None:
+        """REQ-005.1–005.5: 定数が仕様どおりの整数値であること。"""
+        from dify_admin.exceptions import (
+            EXIT_APP_ERROR,
+            EXIT_CONNECTION_ERROR,
+            EXIT_SUCCESS,
+            EXIT_TIMEOUT_ERROR,
+            EXIT_USAGE_ERROR,
+        )
+
+        assert EXIT_SUCCESS == 0
+        assert EXIT_APP_ERROR == 1
+        assert EXIT_USAGE_ERROR == 2
+        assert EXIT_CONNECTION_ERROR == 3
+        assert EXIT_TIMEOUT_ERROR == 4
+
+    def test_exit_code_for_dify_connection_error(self) -> None:
+        """REQ-005.4, PROP-007: DifyConnectionError → 3."""
+        from dify_admin.exceptions import DifyConnectionError, exit_code_for_exception
+
+        exc = DifyConnectionError("http://localhost:5001")
+        assert exit_code_for_exception(exc) == 3
+
+    def test_exit_code_for_httpx_timeout(self) -> None:
+        """REQ-005.5, PROP-007: httpx.TimeoutException → 4."""
+        from dify_admin.exceptions import exit_code_for_exception
+
+        # ReadTimeout は TimeoutException のサブクラス（実装は isinstance 判定想定）
+        exc = httpx.ReadTimeout("timed out")
+        assert exit_code_for_exception(exc) == 4
+
+    def test_exit_code_for_dify_admin_error_subclass(self) -> None:
+        """REQ-005.2, PROP-007: DifyAdminError（接続以外）→ 1。"""
+        from dify_admin.exceptions import DifyNotFoundError, exit_code_for_exception
+
+        exc = DifyNotFoundError("App", "x")
+        assert exit_code_for_exception(exc) == 1
+
+    def test_exit_code_for_generic_exception(self) -> None:
+        """REQ-005.2: その他 Exception → 1（アプリケーションエラー扱い）。"""
+        from dify_admin.exceptions import exit_code_for_exception
+
+        assert exit_code_for_exception(ValueError("oops")) == 1
+        assert exit_code_for_exception(RuntimeError("fail")) == 1

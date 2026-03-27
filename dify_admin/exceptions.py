@@ -110,7 +110,10 @@ class DifyConnectionError(DifyAdminError):
         detail = f": {cause}" if cause else ""
         super().__init__(
             f"Cannot connect to Dify at {url}{detail}",
-            hint="Check that Dify is running and the URL is correct",
+            hint=(
+                "Check that Dify is running and the URL is correct. "
+                "Run 'dify-admin doctor' to diagnose connectivity"
+            ),
         )
 
 
@@ -195,3 +198,28 @@ def raise_for_dify_status(response: httpx.Response) -> None:
         status_code=status,
         **common,
     )
+
+
+# ── Exit Code Constants ──────────────────────────────────
+
+EXIT_SUCCESS = 0
+EXIT_APP_ERROR = 1
+EXIT_USAGE_ERROR = 2
+EXIT_CONNECTION_ERROR = 3
+EXIT_TIMEOUT_ERROR = 4
+
+
+def exit_code_for_exception(exc: Exception) -> int:
+    """Map an exception to the appropriate CLI exit code.
+
+    Args:
+        exc: The exception to classify.
+
+    Returns:
+        Exit code integer (0-4).
+    """
+    if isinstance(exc, DifyConnectionError):
+        return EXIT_CONNECTION_ERROR
+    if isinstance(exc, httpx.TimeoutException):
+        return EXIT_TIMEOUT_ERROR
+    return EXIT_APP_ERROR

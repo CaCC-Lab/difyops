@@ -231,6 +231,44 @@ dify-admin --json apps list | jq '.[].name'
 dify-admin --json apps get --name "FAQ Bot" | jq '.model_config.model'
 ```
 
+## Agent-Friendly CLI
+
+DifyOps CLI は **エージェント（Claude / Cursor 等）からの利用**を想定し、README と各コマンドの `--help` で同じ前提を説明します（REQ-009）。
+
+- **Structured help**: Usage / Description / Options / Side Effects など、`--help` を機械的にパースしやすい構造にしています。
+- **JSON 出力**: `--json` では成功時のデータのみ stdout に出し、エラー時は stderr の JSON と終了コードで判定できます。
+- **Idempotency**: 各コマンドの Idempotent ラベル（yes / no / conditional）は `--help` の **Idempotent:** 行と整合させています。
+- **stdin**: 対応コマンドでは `--file -` または `-` を指定して標準入力から読み込みます。
+
+### Exit codes
+
+CLI の終了コードは `dify_admin.exceptions` の定義と一致します。
+
+| Code | 意味 |
+|------|------|
+| 0 | 正常終了 |
+| 1 | アプリ/API エラー（`DifyAdminError` 等） |
+| 2 | CLI の使い方エラー（`UsageError`） |
+| 3 | 接続エラー（`DifyConnectionError`） |
+| 4 | タイムアウト（`httpx.TimeoutException`） |
+
+### Idempotency 分類
+
+| 分類 | コマンド例 | リトライ |
+|------|-----------|---------|
+| **yes** | `apps list`, `apps get`, `kb list`, `status`, `doctor`, `plan` | 安全 |
+| **no** | `apps create`, `apps delete`, `kb create`, `kb clear`, `audit clear` | 注意 |
+| **conditional** | `apps rename`, `apps config set/patch`, `apply`, `kb sync` | 状態次第 |
+
+### stdin 対応コマンド
+
+| コマンド | 指定方法 |
+|---------|---------|
+| `apps import` | `--file -` |
+| `apps config set` | `--file -` |
+| `plan` | `-`（STATE_FILE 引数） |
+| `apply` | `-`（STATE_FILE 引数） |
+
 ## Python ライブラリ
 
 現在の Python package 名は `dify_admin` です。

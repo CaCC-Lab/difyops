@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -14,12 +15,15 @@ from dify_admin.client import DifyClient
 from dify_admin.diff import diff_configs, format_diff_table
 from dify_admin.env import load_dotenv
 from dify_admin.exceptions import DifyAdminError
+from dify_admin.help import build_help_text
+from dify_admin.metadata import commands_for_json_list
 from dify_admin.output import (
     confirm_destructive,
     get_console,
     get_json_mode,
     output_error,
     output_json,
+    output_json_error,
     output_message,
     output_result,
     output_syntax,
@@ -34,6 +38,33 @@ from dify_admin.resolve import (
     resolve_kb_by_name,
 )
 from dify_admin.sync import compute_sync_plan, execute_sync
+
+
+def _read_input(file_path: str | None, *, allow_stdin: bool = True) -> str:
+    """Read text from a file path or from stdin when ``file_path`` is ``"-"``.
+
+    Args:
+        file_path: Path to a file, or ``"-"`` to read from ``sys.stdin``.
+        allow_stdin: If ``False``, refuse to read from stdin.
+
+    Returns:
+        UTF-8 text read from the file or stdin.
+
+    Raises:
+        click.UsageError: If stdin is empty when ``"-"`` is used, or stdin is disallowed.
+    """
+    if file_path is None:
+        raise click.UsageError("No input path specified.")
+
+    if file_path == "-":
+        if not allow_stdin:
+            raise click.UsageError("stdin is not allowed for this invocation.")
+        data = sys.stdin.read()
+        if data == "":
+            raise click.UsageError("No input received from stdin")
+        return data
+
+    return Path(file_path).read_text(encoding="utf-8")
 
 
 def _resolve_credentials(email: Optional[str], password: Optional[str]) -> tuple[str, str]:
@@ -88,8 +119,15 @@ def _resolve_app_id(
     if name:
         try:
             app = resolve_app_by_name(client, name)
-        except (NameNotFoundError, AmbiguousNameError) as e:
-            output_error(f"[red]{e}[/red]")
+        except NameNotFoundError as e:
+            output_error(
+                f"[red]{e}[/red]\n[dim]Run 'dify-admin apps list' to see available apps[/dim]"
+            )
+            raise SystemExit(1)
+        except AmbiguousNameError as e:
+            output_error(
+                f"[red]{e}[/red]\n[dim]Use APP_ID instead of --name to select a single app.[/dim]"
+            )
             raise SystemExit(1)
         return app["id"]
     if not app_id:
@@ -111,8 +149,13 @@ def _resolve_dataset_id(
     if name:
         try:
             ds = resolve_kb_by_name(client, name)
-        except (NameNotFoundError, AmbiguousNameError) as e:
-            output_error(f"[red]{e}[/red]")
+        except NameNotFoundError as e:
+            output_error(
+                f"[red]{e}[/red]\n[dim]Run 'dify-admin kb list' to see available KBs[/dim]"
+            )
+            raise SystemExit(1)
+        except AmbiguousNameError as e:
+            output_error(f"[red]{e}[/red]\n[dim]Use DATASET_ID instead of --name[/dim]")
             raise SystemExit(1)
         return ds["id"]
     if not dataset_id:
@@ -121,18 +164,59 @@ def _resolve_dataset_id(
 
 
 class DifyAdminGroup(click.Group):
-    """Click group with DifyAdminError handling."""
+    """Click group with structured error handling."""
 
     def invoke(self, ctx: click.Context) -> Any:
-        """Invoke with error handling for DifyAdminError."""
+        """Invoke with error handling, exit codes, and JSON error output."""
+        import httpx
+
+        from dify_admin.exceptions import (
+            DifyConnectionError,
+            exit_code_for_exception,
+        )
+
         try:
             return super().invoke(ctx)
+        except DifyConnectionError as e:
+            code = exit_code_for_exception(e)
+            if get_json_mode(ctx):
+                output_json_error(
+                    "DifyConnectionError",
+                    str(e),
+                    hint=e.hint if hasattr(e, "hint") else None,
+                    exit_code=code,
+                )
+            else:
+                output_error(f"[red]{e}[/red]")
+            raise SystemExit(code)
+        except httpx.TimeoutException as e:
+            code = exit_code_for_exception(e)
+            if get_json_mode(ctx):
+                output_json_error(
+                    "TimeoutError",
+                    str(e),
+                    hint="Check network connectivity or increase timeout",
+                    exit_code=code,
+                )
+            else:
+                output_error(f"[red]Timeout: {e}[/red]")
+            raise SystemExit(code)
         except DifyAdminError as e:
-            output_error(f"[red]{e}[/red]")
-            raise SystemExit(1)
+            code = exit_code_for_exception(e)
+            if get_json_mode(ctx):
+                output_json_error(
+                    type(e).__name__,
+                    str(e),
+                    hint=e.hint if hasattr(e, "hint") else None,
+                    status_code=e.status_code if hasattr(e, "status_code") else None,
+                    exit_code=code,
+                )
+            else:
+                output_error(f"[red]{e}[/red]")
+            raise SystemExit(code)
 
 
-@click.group(cls=DifyAdminGroup)
+@click.group(cls=DifyAdminGroup, invoke_without_command=True)
 @click.option(
     "--url",
     default=None,
@@ -147,6 +231,11 @@ def main(ctx: click.Context, url: Optional[str], json_mode: bool, env_file: Opti
     ctx.ensure_object(dict)
     ctx.obj["url"] = _resolve_url(url)
     ctx.obj["json"] = json_mode
+    if ctx.invoked_subcommand is None:
+        if json_mode:
+            output_json({"commands": commands_for_json_list(None)})
+        else:
+            click.echo(ctx.get_help())
 
 
 # ── Login ───────────────────────────────────────────────────
@@ -172,12 +261,38 @@ def login(ctx: click.Context, email: Optional[str], password: Optional[str]) -> 
         console.print(f"  csrf_token:   {cs[:30]}{'...' if len(cs) > 30 else ''}")
 
 
+login.help = build_help_text(
+    summary="Test login and display session info.",
+    description=(
+        "Authenticate against the Dify server and display the resulting session tokens.\n"
+        "Input: --email and --password (or DIFY_EMAIL / DIFY_PASSWORD env vars).\n"
+        "Output: access_token and csrf_token from the authenticated session."
+    ),
+    examples=[
+        "$ dify-admin login --email admin@example.com --password secret",
+        "$ dify-admin --json login",
+    ],
+    idempotent="yes",
+    json_output_keys=["access_token", "csrf_token"],
+)
+
+
 # ── Apps ────────────────────────────────────────────────────
 
 
-@main.group()
-def apps() -> None:
+@main.group(invoke_without_command=True)
+@click.option("--json", "apps_json_mode", is_flag=True, default=False, help="Output as JSON")
+@click.pass_context
+def apps(ctx: click.Context, apps_json_mode: bool) -> None:
     """Manage Dify apps."""
+    if apps_json_mode:
+        ctx.ensure_object(dict)
+        ctx.obj["json"] = True
+    if ctx.invoked_subcommand is None:
+        if get_json_mode(ctx):
+            output_json({"commands": commands_for_json_list("apps")})
+        else:
+            click.echo(ctx.get_help())
 
 
 @apps.command("list")
@@ -185,7 +300,7 @@ def apps() -> None:
 @click.option("--password", default=None)
 @click.pass_context
 def apps_list(ctx: click.Context, email: Optional[str], password: Optional[str]) -> None:
-    """List all apps."""
+    """List all apps."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         apps_data = client.apps_list()
@@ -209,6 +324,21 @@ def apps_list(ctx: click.Context, email: Optional[str], password: Optional[str])
     )
 
 
+apps_list.help = build_help_text(
+    summary="List all apps.",
+    description=(
+        "Retrieve every app visible to the authenticated account.\n"
+        "Returns a table of app IDs, names, modes, and creation dates.\n"
+        "Use --json for machine-readable output."
+    ),
+    examples=[
+        "$ dify-admin apps list",
+        "$ dify-admin --json apps list",
+    ],
+    idempotent="yes",
+)
+
+
 @apps.command("create")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -228,7 +358,7 @@ def apps_create(
     mode: str,
     description: str,
 ) -> None:
-    """Create a new app."""
+    """Create a new app."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         result = client.apps_create(name=name, mode=mode, description=description)
@@ -241,6 +371,22 @@ def apps_create(
     )
 
 
+apps_create.help = build_help_text(
+    summary="Create a new app.",
+    description=(
+        "Create a new Dify app with the specified name, mode, and description.\n"
+        "Supported modes: chat, completion, advanced-chat, workflow.\n"
+        "Returns the created app's ID and metadata."
+    ),
+    examples=[
+        '$ dify-admin apps create --name "Bot" --mode chat',
+        '$ dify-admin apps create --name "Summarizer" --mode completion',
+    ],
+    side_effects="A new app is created in the Dify instance.",
+    idempotent="no",
+)
+
+
 @apps.command("rename")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -248,6 +394,12 @@ def apps_create(
 @click.option("--name", "app_name", default=None, help="Current app name to resolve")
 @click.option("--new-name", required=True, help="New app name")
 @click.option("--description", default=None, help="New description")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show current and new name without renaming",
+)
 @click.pass_context
 def apps_rename(
     ctx: click.Context,
@@ -257,17 +409,55 @@ def apps_rename(
     app_name: Optional[str],
     new_name: str,
     description: Optional[str],
+    dry_run: bool,
 ) -> None:
-    """Rename an app."""
+    """Rename an app."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
-        app_id = _resolve_app_id(client, app_id, app_name)
-        result = client.apps_rename(app_id, new_name, description=description)
+        resolved_id = _resolve_app_id(client, app_id, app_name)
+        current = client.apps_get(resolved_id)
+        cur_name = str(current.get("name", ""))
+        if dry_run:
+            if get_json_mode(ctx):
+                output_json(
+                    {
+                        "dry_run": True,
+                        "app_id": resolved_id,
+                        "current_name": cur_name,
+                        "new_name": new_name,
+                    }
+                )
+            else:
+                console = get_console(ctx)
+                console.print(
+                    f"[bold]Dry-run:[/bold] Would rename [cyan]{cur_name}[/cyan] "
+                    f"→ [green]{new_name}[/green] (app_id={resolved_id})"
+                )
+            return
+        result = client.apps_rename(resolved_id, new_name, description=description)
     output_result(
         ctx,
         result,
-        f"[green]Renamed app:[/green] {app_id}\n  New name: {new_name}",
+        f"[green]Renamed app:[/green] {resolved_id}\n  New name: {new_name}",
     )
+
+
+apps_rename.help = build_help_text(
+    summary="Rename an app.",
+    description=(
+        "Change the display name of an existing app.\n"
+        "Accepts either an APP_ID positional argument or --name to resolve by name.\n"
+        "Optionally update the description at the same time."
+    ),
+    examples=[
+        '$ dify-admin apps rename APP_ID --new-name "New Name"',
+        '$ dify-admin apps rename --name "Old Name" --new-name "New Name"',
+        '$ dify-admin apps rename APP_ID --new-name "New Name" --dry-run',
+    ],
+    side_effects="App name is changed in the Dify instance.",
+    idempotent="conditional",
+    supports_dry_run=True,
+)
 
 
 @apps.command("search")
@@ -283,7 +473,7 @@ def apps_search(
     query: str,
     mode: Optional[str],
 ) -> None:
-    """Search apps by name."""
+    """Search apps by name."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         results = client.apps_search(query, mode=mode)
@@ -307,6 +497,21 @@ def apps_search(
     )
 
 
+apps_search.help = build_help_text(
+    summary="Search apps by name.",
+    description=(
+        "Search for apps whose name matches the given query string.\n"
+        "Optionally filter results by app mode.\n"
+        "Returns a table of matching apps with IDs, names, modes, and dates."
+    ),
+    examples=[
+        '$ dify-admin apps search "FAQ"',
+        '$ dify-admin apps search "Bot" --mode chat',
+    ],
+    idempotent="yes",
+)
+
+
 @apps.command("delete")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -324,7 +529,7 @@ def apps_delete(
     dry_run: bool,
     yes: bool,
 ) -> None:
-    """Delete an app."""
+    """Delete an app."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         app_id = _resolve_app_id(client, app_id, app_name)
@@ -341,6 +546,24 @@ def apps_delete(
     output_message(ctx, {"deleted": app_id}, f"[green]Deleted app:[/green] {app_id}")
 
 
+apps_delete.help = build_help_text(
+    summary="Delete an app.",
+    description=(
+        "Permanently delete an app from the Dify instance.\n"
+        "Accepts either an APP_ID positional argument or --name to resolve by name.\n"
+        "Use --dry-run to preview without deleting. This action cannot be undone."
+    ),
+    examples=[
+        "$ dify-admin apps delete APP_ID",
+        '$ dify-admin apps delete --name "My Bot"',
+        "$ dify-admin apps delete APP_ID --dry-run",
+    ],
+    side_effects="App is permanently deleted and cannot be undone.",
+    idempotent="conditional",
+    supports_dry_run=True,
+)
+
+
 @apps.command("get")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -354,12 +577,27 @@ def apps_get(
     app_id: Optional[str],
     app_name: Optional[str],
 ) -> None:
-    """Get app details."""
+    """Get app details."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         app_id = _resolve_app_id(client, app_id, app_name)
         result = client.apps_get(app_id)
     output_syntax(ctx, result)
+
+
+apps_get.help = build_help_text(
+    summary="Get app details.",
+    description=(
+        "Retrieve the full configuration and metadata for a single app.\n"
+        "Accepts either an APP_ID positional argument or --name to resolve by name.\n"
+        "Output is displayed as syntax-highlighted JSON."
+    ),
+    examples=[
+        "$ dify-admin apps get APP_ID",
+        '$ dify-admin apps get --name "My Bot"',
+    ],
+    idempotent="yes",
+)
 
 
 @apps.command("export")
@@ -384,7 +622,7 @@ def apps_export(
     app_name: Optional[str],
     output_file: Optional[str],
 ) -> None:
-    """Export app as DSL YAML."""
+    """Export app as DSL YAML."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         app_id = _resolve_app_id(client, app_id, app_name)
@@ -402,6 +640,21 @@ def apps_export(
         click.echo(yaml_data)
 
 
+apps_export.help = build_help_text(
+    summary="Export app as DSL YAML.",
+    description=(
+        "Export an app's full configuration as a DSL YAML document.\n"
+        "Accepts either an APP_ID positional argument or --name to resolve by name.\n"
+        "Use -o/--output to write directly to a file."
+    ),
+    examples=[
+        "$ dify-admin apps export APP_ID",
+        '$ dify-admin apps export --name "My Bot" -o bot.yml',
+    ],
+    idempotent="yes",
+)
+
+
 @apps.command("import")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -409,10 +662,16 @@ def apps_export(
     "--file",
     "import_file",
     required=True,
-    type=click.Path(exists=True, dir_okay=False),
-    help="YAML file to import",
+    type=str,
+    help="YAML file to import (use - for stdin)",
 )
 @click.option("--name", "app_name", default=None, help="Override app name")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Parse YAML and show app name/mode without importing",
+)
 @click.pass_context
 def apps_import_cmd(
     ctx: click.Context,
@@ -420,10 +679,49 @@ def apps_import_cmd(
     password: Optional[str],
     import_file: str,
     app_name: Optional[str],
+    dry_run: bool,
 ) -> None:
-    """Import app from DSL YAML file."""
+    """Import app from DSL YAML file."""  # replaced below
+    import yaml as yaml_lib
+
     email, password = _resolve_credentials(email, password)
-    yaml_data = Path(import_file).read_text(encoding="utf-8")
+    if import_file == "-":
+        yaml_data = _read_input("-")
+    else:
+        path = Path(import_file)
+        if not path.is_file():
+            raise click.BadParameter(
+                f"File not found or not a file: {import_file}",
+                param_hint="--file",
+            )
+        yaml_data = path.read_text(encoding="utf-8")
+    if dry_run:
+        try:
+            data = yaml_lib.safe_load(yaml_data)
+        except yaml_lib.YAMLError as e:
+            output_error(f"[red]Invalid YAML:[/red] {e}")
+            raise SystemExit(1)
+        if not isinstance(data, dict):
+            output_error(f"[red]DSL root must be a mapping, got {type(data).__name__}[/red]")
+            raise SystemExit(1)
+        app_block = data.get("app") if isinstance(data.get("app"), dict) else {}
+        extracted_name = app_block.get("name", "(unknown)")
+        extracted_mode = app_block.get("mode", "(unknown)")
+        if get_json_mode(ctx):
+            output_json(
+                {
+                    "dry_run": True,
+                    "app_name": extracted_name,
+                    "mode": extracted_mode,
+                }
+            )
+        else:
+            console = get_console(ctx)
+            console.print(
+                "[bold]Dry-run:[/bold] YAML parsed. "
+                f"app.name={extracted_name!r}, app.mode={extracted_mode!r}"
+            )
+        return
     with _make_client(ctx.obj["url"], email, password) as client:
         result = client.apps_import(yaml_data, name=app_name)
     output_result(
@@ -432,6 +730,24 @@ def apps_import_cmd(
         f"[green]Imported app:[/green] {result.get('id', 'unknown')}\n"
         f"  Name: {result.get('name', '-')}",
     )
+
+
+apps_import_cmd.help = build_help_text(
+    summary="Import app from DSL YAML file.",
+    description=(
+        "Create a new app by importing a DSL YAML file.\n"
+        "The YAML file must be a valid Dify app export.\n"
+        "Use --name to override the app name from the YAML."
+    ),
+    examples=[
+        "$ dify-admin apps import --file bot.yml",
+        '$ dify-admin apps import --file bot.yml --name "Imported Bot"',
+        "$ dify-admin apps import --file bot.yml --dry-run",
+    ],
+    side_effects="A new app is created from the DSL YAML file.",
+    idempotent="no",
+    supports_dry_run=True,
+)
 
 
 @apps.command("scaffold")
@@ -447,10 +763,7 @@ def apps_scaffold(
     template_id: str,
     app_name: Optional[str],
 ) -> None:
-    """Create an app from a template.
-
-    Templates: chat-basic, chat-rag, completion, workflow, agent
-    """
+    """Create an app from a template."""  # replaced below
     from dify_admin.templates import get_template
 
     try:
@@ -477,10 +790,26 @@ def apps_scaffold(
     )
 
 
+apps_scaffold.help = build_help_text(
+    summary="Create an app from a template.",
+    description=(
+        "Create a new app using a built-in template.\n"
+        "Available templates: chat-basic, chat-rag, completion, workflow, agent.\n"
+        "Use --name to override the default template name."
+    ),
+    examples=[
+        '$ dify-admin apps scaffold chat-rag --name "RAG Bot"',
+        "$ dify-admin apps scaffold workflow",
+    ],
+    side_effects="A new app is created from the selected template.",
+    idempotent="no",
+)
+
+
 @apps.command("templates")
 @click.pass_context
 def apps_templates(ctx: click.Context) -> None:
-    """List available app templates."""
+    """List available app templates."""  # replaced below
     from dify_admin.templates import list_templates
 
     templates = list_templates()
@@ -503,6 +832,21 @@ def apps_templates(ctx: click.Context) -> None:
     )
 
 
+apps_templates.help = build_help_text(
+    summary="List available app templates.",
+    description=(
+        "Display all built-in app templates that can be used with scaffold.\n"
+        "Each template includes an ID, name, mode, and description.\n"
+        "Use this to discover available templates before scaffolding."
+    ),
+    examples=[
+        "$ dify-admin apps templates",
+        "$ dify-admin --json apps templates",
+    ],
+    idempotent="yes",
+)
+
+
 @apps.command("clone")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -518,7 +862,7 @@ def apps_clone(
     app_name: Optional[str],
     clone_name: Optional[str],
 ) -> None:
-    """Clone an app (export + import)."""
+    """Clone an app (export + import)."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         app_id = _resolve_app_id(client, app_id, app_name)
@@ -529,6 +873,22 @@ def apps_clone(
         f"[green]Cloned app:[/green] {result.get('id', 'unknown')}\n"
         f"  Name: {result.get('name', '-')}",
     )
+
+
+apps_clone.help = build_help_text(
+    summary="Clone an app.",
+    description=(
+        "Create a copy of an existing app by exporting and re-importing it.\n"
+        "Accepts either an APP_ID positional argument or --name to resolve by name.\n"
+        "Use --clone-name to set a custom name for the new copy."
+    ),
+    examples=[
+        "$ dify-admin apps clone APP_ID",
+        '$ dify-admin apps clone --name "Original Bot" --clone-name "Bot Copy"',
+    ],
+    side_effects="A copy of the app is created in the Dify instance.",
+    idempotent="no",
+)
 
 
 @apps.command("diff")
@@ -544,7 +904,7 @@ def apps_diff(
     left_app_id: str,
     right_app_id: str,
 ) -> None:
-    """Compare two apps' configurations."""
+    """Compare two apps' configurations."""  # replaced below
     email, password = _resolve_credentials(email, password)
     with _make_client(ctx.obj["url"], email, password) as client:
         left = client.apps_get(left_app_id)
@@ -567,6 +927,21 @@ def apps_diff(
         console.print(format_diff_table(diffs, left_name, right_name))
 
 
+apps_diff.help = build_help_text(
+    summary="Compare two apps' configurations.",
+    description=(
+        "Show a side-by-side diff of two apps' configurations.\n"
+        "Takes two APP_ID arguments and compares their settings.\n"
+        "Differences are displayed in a formatted table."
+    ),
+    examples=[
+        "$ dify-admin apps diff APP_ID_1 APP_ID_2",
+        "$ dify-admin --json apps diff APP_ID_1 APP_ID_2",
+    ],
+    idempotent="yes",
+)
+
+
 @apps.command("dsl-diff")
 @click.argument("left_file", type=click.Path(exists=True, dir_okay=False))
 @click.argument("right_file", type=click.Path(exists=True, dir_okay=False))
@@ -576,7 +951,7 @@ def apps_dsl_diff(
     left_file: str,
     right_file: str,
 ) -> None:
-    """Compare two DSL YAML files."""
+    """Compare two DSL YAML files."""  # replaced below
     from dify_admin.diff import diff_dsl, format_diff_table
 
     left_yaml = Path(left_file).read_text(encoding="utf-8")
@@ -597,6 +972,21 @@ def apps_dsl_diff(
         console.print(f"[bold]DSL diff: {left_label} vs {right_label}[/bold]")
         console.print(f"  {len(diffs)} differences found\n")
         console.print(format_diff_table(diffs, left_label, right_label))
+
+
+apps_dsl_diff.help = build_help_text(
+    summary="Compare two DSL YAML files.",
+    description=(
+        "Show a side-by-side diff of two local DSL YAML files.\n"
+        "Does not require a Dify connection; works entirely offline.\n"
+        "Differences are displayed in a formatted table."
+    ),
+    examples=[
+        "$ dify-admin apps dsl-diff left.yml right.yml",
+        "$ dify-admin --json apps dsl-diff left.yml right.yml",
+    ],
+    idempotent="yes",
+)
 
 
 @apps.group("config")
@@ -625,6 +1015,22 @@ def apps_config_get(
     output_syntax(ctx, result)
 
 
+apps_config_get.help = build_help_text(
+    "Get app model configuration.",
+    "Retrieve the model configuration for a Dify app.\n"
+    "Input: APP_ID or --name for name resolution.\n"
+    "Output: JSON object with model settings, prompts, and parameters.",
+    examples=[
+        "$ dify-admin apps config get APP_ID\n"
+        "  → display model configuration as syntax-highlighted JSON",
+        '$ dify-admin apps config get --name "FAQ Bot"\n'
+        "  → resolve by name and display configuration",
+    ],
+    idempotent="yes",
+    json_output_keys=["model", "pre_prompt", "opening_statement"],
+)
+
+
 @apps_config.command("set")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -634,8 +1040,14 @@ def apps_config_get(
     "--file",
     "config_file",
     required=True,
-    type=click.Path(exists=True, dir_okay=False),
-    help="JSON config file",
+    type=str,
+    help="JSON config file (use - for stdin)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Validate JSON locally without calling the API",
 )
 @click.pass_context
 def apps_config_set(
@@ -645,22 +1057,38 @@ def apps_config_set(
     app_id: Optional[str],
     app_name: Optional[str],
     config_file: str,
+    dry_run: bool,
 ) -> None:
-    """Update app model configuration from a JSON file."""
+    """Update app model configuration from a JSON file."""  # noqa: D401
     email, password = _resolve_credentials(email, password)
     try:
-        raw = Path(config_file).read_text(encoding="utf-8")
+        if config_file == "-":
+            raw = _read_input("-")
+        else:
+            raw = Path(config_file).read_text(encoding="utf-8")
     except (PermissionError, UnicodeDecodeError) as e:
         output_error(f"[red]Cannot read {config_file}:[/red] {e}")
         raise SystemExit(1)
     try:
         config_data = json.loads(raw)
     except json.JSONDecodeError as e:
-        output_error(f"[red]Invalid JSON in {config_file}:[/red] {e}")
+        snippet = raw[:100]
+        output_error(
+            f"[red]Invalid JSON in {config_file}:[/red] {e}\n"
+            f"[dim]Input (first 100 chars): {snippet}[/dim]"
+        )
         raise SystemExit(1)
     if not isinstance(config_data, dict):
         output_error(f"[red]Config must be a JSON object, got {type(config_data).__name__}[/red]")
         raise SystemExit(1)
+    if dry_run:
+        if get_json_mode(ctx):
+            output_json({"dry_run": True, "config": config_data})
+        else:
+            console = get_console(ctx)
+            console.print(f"[bold]Dry-run:[/bold] JSON is valid ({type(config_data).__name__}).")
+            output_syntax(ctx, config_data)
+        return
     with _make_client(ctx.obj["url"], email, password) as client:
         app_id = _resolve_app_id(client, app_id, app_name)
         result = client.apps_update_config(app_id, config_data)
@@ -669,6 +1097,29 @@ def apps_config_set(
         result,
         f"[green]Updated config for app:[/green] {app_id}",
     )
+
+
+apps_config_set.help = build_help_text(
+    "Update app model configuration from a JSON file.",
+    "Replace the entire model configuration for a Dify app.\n"
+    "Input: APP_ID or --name, plus --file with a JSON config file.\n"
+    "Output: confirmation message or JSON result.",
+    examples=[
+        "$ dify-admin apps config set APP_ID --file config.json\n"
+        "  → apply the JSON configuration to the app",
+        '$ dify-admin apps config set --name "Bot" --file config.json\n'
+        "  → resolve by name and apply configuration",
+        "$ dify-admin apps config set APP_ID --file c.json --dry-run\n"
+        "  → validate JSON locally without applying",
+    ],
+    side_effects=(
+        "The entire model configuration is overwritten.\n"
+        "Previous settings are lost unless a snapshot was taken."
+    ),
+    idempotent="conditional",
+    json_output_keys=["result"],
+    supports_dry_run=True,
+)
 
 
 @apps_config.command("patch")
@@ -724,6 +1175,29 @@ def apps_config_patch(
     )
 
 
+apps_config_patch.help = build_help_text(
+    "Patch app config with --set key=value and --unset key.",
+    "Modify specific config values using dot-notation keys.\n"
+    "Input: APP_ID or --name, plus --set and/or --unset operations.\n"
+    "Output: patched configuration or confirmation.",
+    examples=[
+        "$ dify-admin apps config patch APP_ID --set model.name=gpt-4o\n  → change the model name",
+        '$ dify-admin apps config patch --name "Bot" '
+        "--set model.completion_params.temperature=0.7\n"
+        "  → resolve by name and patch temperature",
+        "$ dify-admin apps config patch APP_ID "
+        "--set model.name=gpt-4o --dry-run\n"
+        "  → preview patched config without applying",
+    ],
+    side_effects=(
+        "Specified config values are modified in place.\nUnspecified values remain unchanged."
+    ),
+    idempotent="conditional",
+    json_output_keys=["result"],
+    supports_dry_run=True,
+)
+
+
 # ── Knowledge Bases ─────────────────────────────────────────
 
 
@@ -763,6 +1237,20 @@ def kb_list(ctx: click.Context, email: Optional[str], password: Optional[str]) -
     )
 
 
+kb_list.help = build_help_text(
+    "List knowledge bases.",
+    "List all knowledge bases in the Dify instance.\n"
+    "Input: authentication credentials.\n"
+    "Output: table with ID, Name, Docs, Words, Embedding model.",
+    examples=[
+        "$ dify-admin kb list\n  → display knowledge bases as a table",
+        "$ dify-admin --json kb list\n  → output as JSON array",
+    ],
+    idempotent="yes",
+    json_output_keys=["id", "name", "document_count", "word_count"],
+)
+
+
 @kb.command("create")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -787,6 +1275,20 @@ def kb_create(
     )
 
 
+kb_create.help = build_help_text(
+    "Create a knowledge base.",
+    "Create a new empty knowledge base in Dify.\n"
+    "Input: --name (required) and optional --description.\n"
+    "Output: created KB details with ID and name.",
+    examples=[
+        '$ dify-admin kb create --name "Company Docs"\n  → create a new knowledge base',
+    ],
+    side_effects="A new knowledge base is created.",
+    idempotent="no",
+    json_output_keys=["id", "name"],
+)
+
+
 @kb.command("upload")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -797,6 +1299,12 @@ def kb_create(
 @click.option("--chunk-size", default=None, type=int, help="Max tokens per chunk")
 @click.option("--chunk-overlap", default=None, type=int, help="Overlap tokens")
 @click.option("--separator", default=None, help="Custom separator")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="List matching files without uploading",
+)
 @click.pass_context
 def kb_upload(
     ctx: click.Context,
@@ -809,6 +1317,7 @@ def kb_upload(
     chunk_size: Optional[int],
     chunk_overlap: Optional[int],
     separator: Optional[str],
+    dry_run: bool,
 ) -> None:
     """Upload files to a knowledge base.
 
@@ -831,6 +1340,30 @@ def kb_upload(
         if v is not None
     }
 
+    if dry_run:
+        if p.is_file():
+            matched = [p]
+        else:
+            matched = sorted(p.glob(pattern))
+        with _make_client(ctx.obj["url"], email, password) as client:
+            resolved_ds = _resolve_dataset_id(client, dataset_id, kb_name)
+        if get_json_mode(ctx):
+            output_json(
+                {
+                    "dry_run": True,
+                    "dataset_id": resolved_ds,
+                    "files": [str(x) for x in matched],
+                }
+            )
+        else:
+            console = get_console(ctx)
+            console.print(
+                f"[bold]Dry-run:[/bold] Would upload {len(matched)} file(s) to {resolved_ds}"
+            )
+            for f in matched:
+                console.print(f"  [dim]{f}[/dim]")
+        return
+
     with _make_client(ctx.obj["url"], email, password) as client:
         dataset_id = _resolve_dataset_id(client, dataset_id, kb_name)
         console = get_console(ctx)
@@ -850,6 +1383,24 @@ def kb_upload(
                 f"[green]Done:[/green] {result['uploaded']}/{result['total']} uploaded, "
                 f"{result['failed']} failed",
             )
+
+
+kb_upload.help = build_help_text(
+    "Upload files to a knowledge base.",
+    "Upload a single file or directory of files to a KB.\n"
+    "Input: DATASET_ID or --name, plus PATH (file or directory).\n"
+    "Output: upload result with count of uploaded/failed files.",
+    examples=[
+        '$ dify-admin kb upload DATASET_ID ./docs/ --pattern "*.md"\n'
+        "  → upload all Markdown files from directory",
+        '$ dify-admin kb upload --name "Docs" ./file.pdf\n  → upload a single file by KB name',
+        "$ dify-admin kb upload DATASET_ID ./docs/ --dry-run\n"
+        "  → list files that would be uploaded",
+    ],
+    side_effects="Documents are uploaded and indexed in the KB.",
+    idempotent="no",
+    supports_dry_run=True,
+)
 
 
 @kb.group("docs")
@@ -897,6 +1448,22 @@ def kb_docs_list(
     )
 
 
+kb_docs_list.help = build_help_text(
+    "List documents in a knowledge base.",
+    "List all documents with indexing status and metadata.\n"
+    "Input: DATASET_ID or --name for KB resolution.\n"
+    "Output: table with ID, Name, Status, Words, Created.\n"
+    "Returns DOC_ID values for use with kb docs list subcommands.",
+    examples=[
+        "$ dify-admin kb docs list DATASET_ID\n  → display documents as a table",
+        '$ dify-admin kb docs list --name "Company Docs"\n'
+        "  → resolve KB by name and list documents",
+    ],
+    idempotent="yes",
+    json_output_keys=["id", "name", "indexing_status", "word_count"],
+)
+
+
 @kb_docs.command("status")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -918,6 +1485,22 @@ def kb_docs_status(
         dataset_id = _resolve_dataset_id(client, dataset_id, kb_name)
         result = client.kb_document_status(dataset_id, doc_id)
     output_syntax(ctx, result)
+
+
+kb_docs_status.help = build_help_text(
+    "Get indexing status of a document.",
+    "Retrieve the current indexing status and progress.\n"
+    "Input: DATASET_ID (or --name) and DOC_ID.\n"
+    "Output: JSON with indexing_status, timestamps, segments.\n"
+    "Use 'kb docs list' to find document IDs.",
+    examples=[
+        "$ dify-admin kb docs status DATASET_ID DOC_ID\n"
+        "  → show indexing status as syntax-highlighted JSON",
+        '$ dify-admin kb docs status --name "Docs" DOC_ID\n  → resolve KB by name',
+    ],
+    idempotent="yes",
+    json_output_keys=["indexing_status", "completed_segments", "total_segments"],
+)
 
 
 @kb_docs.command("reindex")
@@ -945,6 +1528,24 @@ def kb_docs_reindex(
         result,
         f"[green]Reindex triggered:[/green] {doc_id}",
     )
+
+
+kb_docs_reindex.help = build_help_text(
+    "Trigger re-indexing of a document.",
+    "Re-index a document to refresh its vector embeddings.\n"
+    "Input: DATASET_ID (or --name) and DOC_ID.\n"
+    "Output: confirmation of reindex trigger.\n"
+    "Use 'kb docs list' to find document IDs.",
+    examples=[
+        "$ dify-admin kb docs reindex DATASET_ID DOC_ID\n  → trigger re-indexing",
+        '$ dify-admin kb docs reindex --name "Docs" DOC_ID\n  → resolve KB by name and reindex',
+    ],
+    side_effects=(
+        "The document is queued for re-indexing.\n"
+        "Existing index remains until new indexing completes."
+    ),
+    idempotent="conditional",
+)
 
 
 @kb_docs.command("delete")
@@ -987,6 +1588,23 @@ def kb_docs_delete(
     )
 
 
+kb_docs_delete.help = build_help_text(
+    "Delete a document from a knowledge base.",
+    "Permanently remove a single document and its index.\n"
+    "Input: DATASET_ID (or --name) and DOC_ID.\n"
+    "Output: confirmation of deletion.\n"
+    "Use 'kb docs list' to find document IDs.",
+    examples=[
+        "$ dify-admin kb docs delete DATASET_ID DOC_ID --dry-run\n"
+        "  → preview what would be deleted",
+        '$ dify-admin kb docs delete --name "Docs" DOC_ID --yes\n  → delete without confirmation',
+    ],
+    side_effects=("The document and its index are permanently removed.\nThis cannot be undone."),
+    idempotent="no",
+    supports_dry_run=True,
+)
+
+
 @kb.command("clear")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
@@ -1026,6 +1644,24 @@ def kb_clear(
         {"deleted_count": count},
         f"[green]Deleted {count} documents[/green]",
     )
+
+
+kb_clear.help = build_help_text(
+    "Delete all documents in a knowledge base.",
+    "Remove every document from a knowledge base.\n"
+    "Input: DATASET_ID or --name for resolution.\n"
+    "Output: count of deleted documents.",
+    examples=[
+        '$ dify-admin kb clear --name "Old Docs" --dry-run\n'
+        "  → preview how many documents would be deleted",
+        "$ dify-admin kb clear DATASET_ID --yes\n  → delete all documents without confirmation",
+    ],
+    side_effects=(
+        "All documents and their indexes are permanently removed.\nThis cannot be undone."
+    ),
+    idempotent="no",
+    supports_dry_run=True,
+)
 
 
 @kb.command("sync")
@@ -1139,6 +1775,28 @@ def kb_sync(
     )
 
 
+kb_sync.help = build_help_text(
+    "Sync local files to a knowledge base.",
+    "Compare local files with remote documents and sync changes.\n"
+    "Input: DATASET_ID or --name, plus PATH (local directory).\n"
+    "Output: sync result with upload/delete/unchanged counts.",
+    examples=[
+        '$ dify-admin kb sync --name "Docs" ./files/ --dry-run\n'
+        "  → preview sync plan without executing",
+        "$ dify-admin kb sync DATASET_ID ./files/ --checksum\n"
+        "  → sync with checksum-based change detection",
+        "$ dify-admin kb sync DATASET_ID ./files/ --delete-missing --yes\n"
+        "  → sync and delete remote-only documents",
+    ],
+    side_effects=(
+        "New files are uploaded, changed files are updated.\n"
+        "With --delete-missing, remote-only documents are deleted."
+    ),
+    idempotent="conditional",
+    supports_dry_run=True,
+)
+
+
 # ── Password Reset ──────────────────────────────────────────
 
 
@@ -1158,6 +1816,25 @@ def reset_password(ctx: click.Context, email: str, new_password: str, container:
     else:
         output_error("[red]Password reset failed[/red]")
         raise SystemExit(1)
+
+
+reset_password.help = build_help_text(
+    summary="Reset account password via direct database access.",
+    description=(
+        "Change a Dify account password by executing SQL directly in the PostgreSQL container.\n"
+        "Input: --email for the target account, --new-password for the replacement value.\n"
+        "Output: success or failure message. Requires Docker access to the database container."
+    ),
+    examples=[
+        "$ dify-admin reset-password --email admin@example.com --new-password newpass123",
+        "$ dify-admin reset-password --email x --new-password y --container my-db",
+    ],
+    side_effects=(
+        "Password is changed directly in PostgreSQL.\n"
+        "This is a DB-level operation, not a Dify API call."
+    ),
+    idempotent="conditional",
+)
 
 
 # ── Status ──────────────────────────────────────────────────
@@ -1185,6 +1862,23 @@ def status(ctx: click.Context) -> None:
         console.print("[green]Dify is running[/green]")
         console.print(f"  Setup: {setup.get('step', 'unknown')}")
         console.print(f"  URL:   {ctx.obj['url']}")
+
+
+status.help = build_help_text(
+    summary="Check Dify server status.",
+    description=(
+        "Query the Dify server's setup endpoint to verify it is running and reachable.\n"
+        "Input: no authentication required; uses the configured --url.\n"
+        "Output: server status, setup step, and URL."
+    ),
+    examples=[
+        "$ dify-admin status",
+        "$ dify-admin --url http://dify.example.com:5001 status",
+        "$ dify-admin --json status",
+    ],
+    idempotent="yes",
+    json_output_keys=["status", "step", "url"],
+)
 
 
 # ── Snapshots ──────────────────────────────────────────────
@@ -1348,6 +2042,23 @@ def env_diff(
     console.print(f"  Common:      {s['kb_common']}")
 
 
+env_diff.help = build_help_text(
+    summary="Compare two Dify environments.",
+    description=(
+        "Connect to two Dify instances and compare their apps and knowledge bases.\n"
+        "Input: --source-url and --target-url for the two environments, plus credentials.\n"
+        "Output: side-by-side summary of resources unique to each\n"
+        "environment and those in common."
+    ),
+    examples=[
+        "$ dify-admin env-diff --source-url http://dev:5001 --target-url http://prod:5001",
+        "$ dify-admin --json env-diff --source-url http://dev:5001 --target-url http://prod:5001",
+    ],
+    idempotent="yes",
+    json_output_keys=["summary", "apps", "knowledge_bases"],
+)
+
+
 # ── Audit Log ──────────────────────────────────────────────
 
 
@@ -1381,6 +2092,20 @@ def audit_list(ctx: click.Context, limit: int) -> None:
         console.print(f"  {t}  {op:10s} {rtype:5s}  {rname}")
 
 
+audit_list.help = build_help_text(
+    "Show recent audit log entries.",
+    "Display the most recent DESTRUCTIVE operations recorded.\n"
+    "Input: optional --limit to control number of entries.\n"
+    "Output: list of operations with timestamp, type, and resource.",
+    examples=[
+        "$ dify-admin audit list\n  → show last 20 entries",
+        "$ dify-admin audit list --limit 50\n  → show last 50 entries",
+    ],
+    idempotent="yes",
+    json_output_keys=["timestamp", "operation", "resource_type", "resource_id"],
+)
+
+
 @audit.command("clear")
 @click.option("--yes", is_flag=True, default=False)
 @click.pass_context
@@ -1394,13 +2119,26 @@ def audit_clear(ctx: click.Context, yes: bool) -> None:
     output_message(ctx, {"cleared": count}, f"[green]Cleared {count} entries[/green]")
 
 
+audit_clear.help = build_help_text(
+    "Clear the audit log.",
+    "Delete all entries from the local audit log file.\n"
+    "Input: --yes to skip confirmation prompt.\n"
+    "Output: count of cleared entries.",
+    examples=[
+        "$ dify-admin audit clear --yes\n  → clear all entries without confirmation",
+    ],
+    side_effects="All audit log entries are permanently deleted.",
+    idempotent="no",
+)
+
+
 # ── State Management ───────────────────────────────────────
 
 
 @main.command("plan")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
-@click.argument("state_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("state_file", type=str)
 @click.option(
     "--delete-missing",
     is_flag=True,
@@ -1416,10 +2154,19 @@ def state_plan(
     delete_missing: bool,
 ) -> None:
     """Show what changes would be made to reach desired state."""
-    from dify_admin.state import compute_plan, load_state_file
+    from dify_admin.state import compute_plan, load_state_file, load_state_yaml
 
     email, password = _resolve_credentials(email, password)
-    desired = load_state_file(Path(state_file))
+    if state_file == "-":
+        desired = load_state_yaml(_read_input("-"))
+    else:
+        path = Path(state_file)
+        if not path.is_file():
+            raise click.BadParameter(
+                f"File not found or not a file: {state_file}",
+                param_hint="STATE_FILE",
+            )
+        desired = load_state_file(path)
 
     with _make_client(ctx.obj["url"], email, password) as client:
         plan = compute_plan(client, desired, delete_missing=delete_missing)
@@ -1460,10 +2207,28 @@ def state_plan(
     )
 
 
+state_plan.help = build_help_text(
+    summary="Show what changes would be made to reach desired state.",
+    description=(
+        "Load a YAML state file and compare it against the live Dify environment.\n"
+        "Input: a state YAML file path, optional --delete-missing to include deletions.\n"
+        "Output: a plan listing resources to create, update,\n"
+        "or delete without applying any changes."
+    ),
+    examples=[
+        "$ dify-admin plan state.yml",
+        "$ dify-admin plan state.yml --delete-missing",
+        "$ dify-admin --json plan state.yml",
+    ],
+    idempotent="yes",
+    json_output_keys=["action", "type", "name", "details"],
+)
+
+
 @main.command("apply")
 @click.option("--email", default=None)
 @click.option("--password", default=None)
-@click.argument("state_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("state_file", type=str)
 @click.option(
     "--delete-missing",
     is_flag=True,
@@ -1481,10 +2246,19 @@ def state_apply(
     yes: bool,
 ) -> None:
     """Apply desired state from a YAML file."""
-    from dify_admin.state import compute_plan, execute_plan, load_state_file
+    from dify_admin.state import compute_plan, execute_plan, load_state_file, load_state_yaml
 
     email, password = _resolve_credentials(email, password)
-    desired = load_state_file(Path(state_file))
+    if state_file == "-":
+        desired = load_state_yaml(_read_input("-"))
+    else:
+        path = Path(state_file)
+        if not path.is_file():
+            raise click.BadParameter(
+                f"File not found or not a file: {state_file}",
+                param_hint="STATE_FILE",
+            )
+        desired = load_state_file(path)
 
     with _make_client(ctx.obj["url"], email, password) as client:
         plan = compute_plan(client, desired, delete_missing=delete_missing)
@@ -1513,6 +2287,27 @@ def state_apply(
     for r in results:
         if r["status"] == "error":
             console.print(f"  [red]✗ {r['action']} {r['name']}: {r['error']}[/red]")
+
+
+state_apply.help = build_help_text(
+    summary="Apply desired state from a YAML file.",
+    description=(
+        "Load a YAML state file, compute a plan, and execute\n"
+        "all changes against the live Dify environment.\n"
+        "Input: a state YAML file path, optional --delete-missing and --yes flags.\n"
+        "Output: summary of applied changes with success/failure counts per action."
+    ),
+    examples=[
+        "$ dify-admin apply state.yml --yes",
+        "$ dify-admin apply state.yml --delete-missing --yes",
+        "$ dify-admin --json apply state.yml --yes",
+    ],
+    side_effects=(
+        "Apps and KBs are created, updated, or deleted to match YAML.\n"
+        "With --delete-missing, resources not in YAML are removed."
+    ),
+    idempotent="conditional",
+)
 
 
 # ── Doctor ──────────────────────────────────────────────────
@@ -1558,6 +2353,23 @@ def doctor(
         console.print("\n[green]All checks passed[/green]")
 
 
+doctor.help = build_help_text(
+    summary="Run diagnostic checks on Dify connectivity and auth.",
+    description=(
+        "Execute a series of health checks against the Dify server.\n"
+        "Input: optional --email and --password to include authentication checks.\n"
+        "Output: pass/fail/warn/skip status for each check (connectivity, auth, API version, etc.)."
+    ),
+    examples=[
+        "$ dify-admin doctor",
+        "$ dify-admin doctor --email admin@example.com --password secret",
+        "$ dify-admin --json doctor",
+    ],
+    idempotent="yes",
+    json_output_keys=["name", "status", "message"],
+)
+
+
 # ── MCP Server ─────────────────────────────────────────────
 
 
@@ -1577,6 +2389,21 @@ def mcp_serve(ctx: click.Context) -> None:
     from dify_admin.mcp_server import main as run_mcp
 
     run_mcp()
+
+
+mcp_serve.help = build_help_text(
+    summary="Start the MCP server for AI assistant integration.",
+    description=(
+        "Launch a Model Context Protocol (MCP) server that exposes Dify operations as tools.\n"
+        "Input: requires DIFY_EMAIL and DIFY_PASSWORD environment variables to be set.\n"
+        "Output: runs a persistent stdio-based MCP server for AI assistants like Claude Code."
+    ),
+    examples=[
+        "$ dify-admin mcp serve",
+        "$ DIFY_URL=http://dify:5001 dify-admin mcp serve",
+    ],
+    idempotent="yes",
+)
 
 
 if __name__ == "__main__":
