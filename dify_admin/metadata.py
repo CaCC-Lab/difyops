@@ -439,9 +439,17 @@ COMMAND_METADATA: dict[str, CommandMeta] = {
         supports_json=True,
         supports_stdin=False,
     ),
-    # NOTE: "apps restore" exists in CLI but is excluded from the
-    # original 37-command spec. To add it, update the spec first
-    # (Canon TDD exception procedure) then add the entry here.
+    "apps restore": CommandMeta(
+        name="apps restore",
+        group="apps",
+        description="Restore an app from a snapshot",
+        destructive=True,
+        idempotent="conditional",
+        supports_dry_run=False,
+        supports_name=False,
+        supports_json=True,
+        supports_stdin=False,
+    ),
 }
 
 

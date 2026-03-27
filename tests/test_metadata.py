@@ -18,12 +18,12 @@ from typing import Literal, get_args, get_type_hints
 
 import pytest
 
-# --- Expected command keys (37 total): derived from tasks.md Phase 3 / 14 groupings
-# and REQ-007 command lists (apps snapshot + apps snapshots per REQ-007.1).
+# --- Expected command keys (38 total): derived from tasks.md Phase 3 / 14 groupings
+# and REQ-007 command lists (apps snapshot + apps snapshots + apps restore per design.md).
 
 _EXPECTED_COMMAND_KEYS: frozenset[str] = frozenset(
     {
-        # apps (15)
+        # apps (16)
         "apps list",
         "apps get",
         "apps search",
@@ -39,6 +39,7 @@ _EXPECTED_COMMAND_KEYS: frozenset[str] = frozenset(
         "apps dsl-diff",
         "apps snapshot",
         "apps snapshots",
+        "apps restore",
         # apps config (3)
         "apps config get",
         "apps config set",
@@ -69,14 +70,14 @@ _EXPECTED_COMMAND_KEYS: frozenset[str] = frozenset(
     }
 )
 
-assert len(_EXPECTED_COMMAND_KEYS) == 37, "expected command catalogue must contain 37 entries"
+assert len(_EXPECTED_COMMAND_KEYS) == 38, "expected command catalogue must contain 38 entries"
 
 _IDEMPOTENT_LITERAL = Literal["yes", "no", "conditional"]
 
 
 def test_expected_command_catalogue_is_self_consistent() -> None:
-    """Sanity check: the specification-derived set has exactly 37 unique names."""
-    assert len(_EXPECTED_COMMAND_KEYS) == 37
+    """Sanity check: the specification-derived set has exactly 38 unique names."""
+    assert len(_EXPECTED_COMMAND_KEYS) == 38
 
 
 def test_command_meta_is_dataclass_with_documented_fields() -> None:
@@ -111,11 +112,11 @@ def test_command_meta_idempotent_annotation_matches_req007_5() -> None:
     assert set(literal_args) == {"yes", "no", "conditional"}
 
 
-def test_command_metadata_contains_exactly_37_commands() -> None:
-    """tasks.md 1.1: COMMAND_METADATA SHALL contain all 37 CLI subcommands."""
+def test_command_metadata_contains_exactly_38_commands() -> None:
+    """tasks.md 1.1: COMMAND_METADATA SHALL contain all 38 CLI subcommands."""
     from dify_admin.metadata import COMMAND_METADATA
 
-    assert len(COMMAND_METADATA) == 37
+    assert len(COMMAND_METADATA) == 38
     assert set(COMMAND_METADATA.keys()) == _EXPECTED_COMMAND_KEYS
 
 

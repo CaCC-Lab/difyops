@@ -1967,7 +1967,24 @@ def apps_restore(
     snapshot_id: str,
     yes: bool,
 ) -> None:
-    """Restore an app from a snapshot."""
+    """Restore an app from a snapshot.
+
+    Restore an app's configuration to a previously saved snapshot state.
+    Reads the snapshot file from the local snapshots directory and applies
+    the saved DSL configuration to the target app via import.
+
+    Use 'dify-admin apps snapshots <app_id>' to list available snapshots.
+
+    Examples:
+      $ dify-admin apps restore <app_id> <snapshot_id> --yes
+
+    Side Effects:
+      Overwrites the app's current configuration with the snapshot state.
+      The previous state is not automatically saved — take a snapshot first.
+
+    JSON Output Keys: app_name, snapshot_id, status
+
+    Idempotent: conditional"""
     from dify_admin.snapshot import restore_snapshot
 
     if not confirm_destructive(ctx, f"Restore app {app_id} from {snapshot_id}?", yes=yes):
