@@ -1897,7 +1897,7 @@ def apps_snapshot(
     app_id: Optional[str],
     app_name: Optional[str],
 ) -> None:
-    """Take a snapshot of an app's current state."""
+    """Take a snapshot of an app's current state."""  # replaced below
     from dify_admin.snapshot import take_snapshot
 
     email, password = _resolve_credentials(email, password)
@@ -1909,6 +1909,22 @@ def apps_snapshot(
         result,
         f"[green]Snapshot taken:[/green] {result['snapshot_id']}\n  App: {result['app_name']}",
     )
+
+
+apps_snapshot.help = build_help_text(
+    summary="Take a snapshot of an app's current state.",
+    description=(
+        "Save the current configuration and DSL of an app as a local snapshot.\n"
+        "Accepts either an APP_ID positional argument or --name to resolve by name.\n"
+        "Snapshots are stored locally and can be restored later with 'apps restore'."
+    ),
+    examples=[
+        "$ dify-admin apps snapshot APP_ID",
+        '$ dify-admin apps snapshot --name "My Bot"',
+    ],
+    idempotent="yes",
+    json_output_keys=["snapshot_id", "app_name"],
+)
 
 
 @apps.command("snapshots")
@@ -1924,7 +1940,7 @@ def apps_snapshots(
     email: Optional[str],
     password: Optional[str],
 ) -> None:
-    """List snapshots for an app."""
+    """List snapshots for an app."""  # replaced below
     from dify_admin.snapshot import list_snapshots
 
     if app_name:
@@ -1950,6 +1966,22 @@ def apps_snapshots(
             s.get("iso_time", ""),
         ),
     )
+
+
+apps_snapshots.help = build_help_text(
+    summary="List snapshots for an app.",
+    description=(
+        "Display all locally saved snapshots for a given app.\n"
+        "Accepts either an APP_ID positional argument or --name to resolve by name.\n"
+        "Each snapshot shows its ID, app name, and creation timestamp."
+    ),
+    examples=[
+        "$ dify-admin apps snapshots APP_ID",
+        '$ dify-admin apps snapshots --name "My Bot"',
+    ],
+    idempotent="yes",
+    json_output_keys=["snapshot_id", "app_name", "iso_time"],
+)
 
 
 @apps.command("restore")
