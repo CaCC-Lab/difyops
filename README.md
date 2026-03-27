@@ -29,7 +29,7 @@ Dify の運用は、作る段階よりも運用段階で手間が増えます。
 ## できること
 
 - **AI から Dify を自然言語で操作**（MCP サーバー 38 ツール）
-- **CLI** でアプリ作成 / 複製 / 差分確認 / 設定変更
+- **CLI 38 コマンド** でアプリ作成 / 複製 / 差分確認 / 設定変更
 - **ナレッジベースの同期と更新**（checksum 検知、chunking 設定）
 - **YAML で desired state** を定義して `plan` / `apply`
 - **変更履歴の監査**、スナップショット、復元
@@ -258,7 +258,7 @@ CLI の終了コードは `dify_admin.exceptions` の定義と一致します。
 |------|-----------|---------|
 | **yes** | `apps list`, `apps get`, `kb list`, `status`, `doctor`, `plan` | 安全 |
 | **no** | `apps create`, `apps delete`, `kb create`, `kb clear`, `audit clear` | 注意 |
-| **conditional** | `apps rename`, `apps config set/patch`, `apply`, `kb sync` | 状態次第 |
+| **conditional** | `apps rename`, `apps config set/patch`, `apps restore`, `apply`, `kb sync` | 状態次第 |
 
 ### stdin 対応コマンド
 
@@ -328,10 +328,39 @@ with DifyClient() as client:
 uv venv --python 3.10 .venv && source .venv/bin/activate
 uv pip install -e ".[dev,mcp]"
 
-pytest tests/ -v    # 60 テスト
+pytest tests/ -v    # 277 テスト
 ruff check dify_admin/
 ruff format dify_admin/
 ```
+
+## 更新履歴
+
+### v0.3.0 (2026-03-27)
+
+- **CLI コマンドメタデータ 38 コマンド化** — `apps restore` をコマンドカタログに追加
+- **Agent-Friendly CLI** — 全コマンドに構造化ヘルプ（Examples / Side Effects / Idempotent ラベル）
+- **stdin 対応** — `apps import --file -`, `apps config set --file -`, `plan -`, `apply -`
+- **Exit Code 体系** — 0（成功）/ 1（アプリエラー）/ 2（usage）/ 3（接続）/ 4（タイムアウト）
+- **JSON エラー出力** — `--json` モードでエラー時に stderr へ構造化 JSON を出力
+- **コマンドメタデータ JSON** — `dify-admin --json` / `dify-admin apps --json` でメタデータ取得
+- **--dry-run 拡充** — `apps config set`, `apps import`, `apps rename`, `kb upload` に追加
+
+### v0.2.0 (2026-03-22)
+
+- **DifyOps ブランド** — Product名を DifyOps に統一
+- **MCP サーバー 38 ツール** — read-only モード、DESTRUCTIVE マーカー、監査ログ
+- **Dify v1.13+ 対応** — ファイルアップロード 2 ステップ化、新 API エンドポイント対応
+- **Config Patching** — `--set key=value` / `--unset key` による dot-notation 設定変更
+- **環境差分比較** — `env-diff` コマンドで dev/prod 比較
+- **KB 同期** — checksum ベースの差分同期、`--delete-missing` オプション
+
+### v0.1.0 (2026-03-18)
+
+- 初回リリース
+- CLI 基本コマンド（apps / kb / audit）
+- MCP サーバー基盤
+- Python ライブラリ（`DifyClient`）
+- plan / apply による desired state 管理
 
 ## ライセンス
 
