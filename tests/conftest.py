@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
+import inspect
+
 import click.testing
 
-
-# Patch click.testing.Result.stderr to return empty string instead of raising
-# ValueError when stderr is not separately captured. This allows test helpers
-# that use ``getattr(result, "stderr", None)`` to work regardless of whether
-# the CliRunner was created with ``mix_stderr=False``.
-_original_stderr = click.testing.Result.stderr
-
-
-@property  # type: ignore[misc]
-def _safe_stderr(self: click.testing.Result) -> str:
-    """Return stderr output, or empty string if not separately captured."""
-    if self.stderr_bytes is None:
-        return ""
-    return self.stderr_bytes.decode(self.runner.charset, "replace").replace(
-        "\r\n", "\n"
-    )
+# ---------------------------------------------------------------------------
+# Patch CliRunner so that mix_stderr defaults to False.
+# This ensures result.stderr captures stderr output separately from stdout,
+# which is required by tests that verify JSON error output on stderr
+# (test_cli_errors.py) and tests that access result.stderr (test_cli_help.py).
+# ---------------------------------------------------------------------------
+_original_init = click.testing.CliRunner.__init__
+_has_mix_stderr = "mix_stderr" in inspect.signature(_original_init).parameters
 
 
-click.testing.Result.stderr = _safe_stderr  # type: ignore[assignment]
+def _patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    if _has_mix_stderr:
+        kwargs.setdefault("mix_stderr", False)
+    _original_init(self, *args, **kwargs)
+
+
+click.testing.CliRunner.__init__ = _patched_init  # type: ignore[assignment]
